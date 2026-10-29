@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Data, models, experiment output
+data/
+artifacts/
+mlruns/
+optuna.db
+*.parquet
+
+# Go
+gateway/bin/
+
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+playwright-report/
+test-results/
+
+# Env and OS
+.env
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
