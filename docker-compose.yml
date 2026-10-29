@@ -1,0 +1,33 @@
+# Local infrastructure. App services get added here as they're built.
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-quantlab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quantlab}
+      POSTGRES_DB: ${POSTGRES_DB:-quantlab}
+    ports:
+      - "5432:5432"
+    volumes:
+      - tsdb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-quantlab}"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # AOF so the tick stream survives a restart
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  tsdb-data:
+  redis-data:
