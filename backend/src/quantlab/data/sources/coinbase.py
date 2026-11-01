@@ -22,11 +22,11 @@ def parse_candles(rows: list[list[float]]) -> pl.DataFrame:
     if not rows:
         return empty_bars()
     # chú ý thứ tự cột của Coinbase là low, high, open, close (không phải OHLC)
-    df = pl.DataFrame(
-        rows, schema=["ts", "low", "high", "open", "close", "volume"], orient="row"
-    )
+    df = pl.DataFrame(rows, schema=["ts", "low", "high", "open", "close", "volume"], orient="row")
     return (
-        df.with_columns(pl.from_epoch(pl.col("ts").cast(pl.Int64), time_unit="s").dt.replace_time_zone("UTC"))
+        df.with_columns(
+            pl.from_epoch(pl.col("ts").cast(pl.Int64), time_unit="s").dt.replace_time_zone("UTC")
+        )
         .select(list(BAR_SCHEMA))
         .cast(BAR_SCHEMA)
         .sort("ts")
@@ -43,7 +43,9 @@ class CoinbaseClient:
         )
         self.pause = pause
 
-    def fetch_bars(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pl.DataFrame:
+    def fetch_bars(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> pl.DataFrame:
         """Download [start, end) in windows of 300 candles."""
         step = TIMEFRAMES[timeframe]
         if step not in GRANULARITIES:

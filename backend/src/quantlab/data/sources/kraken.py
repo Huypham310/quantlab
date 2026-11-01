@@ -40,7 +40,9 @@ def parse_ohlc(payload: dict) -> pl.DataFrame:
         orient="row",
     )
     return (
-        df.with_columns(pl.from_epoch(pl.col("ts").cast(pl.Int64), time_unit="s").dt.replace_time_zone("UTC"))
+        df.with_columns(
+            pl.from_epoch(pl.col("ts").cast(pl.Int64), time_unit="s").dt.replace_time_zone("UTC")
+        )
         .select(list(BAR_SCHEMA))
         .cast(BAR_SCHEMA)  # prices come back as strings
         .sort("ts")
@@ -53,7 +55,9 @@ class KrakenClient:
     def __init__(self, client: httpx.Client | None = None):
         self.client = client or httpx.Client(base_url=BASE_URL, timeout=20)
 
-    def fetch_bars(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pl.DataFrame:
+    def fetch_bars(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> pl.DataFrame:
         step = TIMEFRAMES[timeframe]
         if step not in INTERVALS:
             raise ValueError(f"Kraken has no {timeframe} candles")
@@ -69,4 +73,6 @@ class KrakenClient:
         df = parse_ohlc(res.json())
         # the newest candle is still forming, drop it along with anything outside the range
         df = df.head(max(df.height - 1, 0))
-        return df.filter((pl.col("ts") >= start.astimezone(UTC)) & (pl.col("ts") < end.astimezone(UTC)))
+        return df.filter(
+            (pl.col("ts") >= start.astimezone(UTC)) & (pl.col("ts") < end.astimezone(UTC))
+        )
