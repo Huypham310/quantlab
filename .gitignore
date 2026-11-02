@@ -9,9 +9,9 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Data, models, experiment output
-data/
-artifacts/
+# Data, models, experiment output (repo root only, not the quantlab.data package)
+/data/
+/artifacts/
 mlruns/
 optuna.db
 *.parquet
