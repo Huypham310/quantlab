@@ -55,6 +55,39 @@ python -m quantlab.stream.check --symbol BTC-USD   # stream bars vs Coinbase's o
 
 Checked live on BTC-USD and ETH-USD for 10 minutes (about 3,600 trades), with the consumer **killed with `Stop-Process -Force` halfway and restarted 40 s later**: every complete minute came out identical (open, high, low, close and volume) to Coinbase's REST 1m candles, including the minutes around the crash. The only difference was the first minute, which is partial because the gateway started mid-minute.
 
+## Backtesting
+
+Two engines that must agree:
+
+- **Vectorized** (Numba `@njit`): `weights[t]` is decided at the close of bar t from data up to t and earns the move from t to t+1, so a signal can't trade on the bar it was computed from. The held weight drifts with the price between bars (fixed units, like a real account), and fees + slippage are charged on |target - held weight|.
+- **Event-driven**: the strategy gets one bar at a time as a read-only view of the history and trades units against cash. It is slow, but structurally can't look ahead, so it's the reference.
+
+On a 3,000-bar random walk with an SMA crossover (long/short, 15 bps costs) the two equity curves match to a relative 1e-14, and a Hypothesis test checks the compiled engine against a plain-Python twin on random prices and weights.
+
+Throughput (`python -m quantlab.backtest.bench`, one core):
+
+| Engine | Bars | Time | Bars/s |
+|---|---:|---:|---:|
+| Numba vectorized | 1,000,000 | 10 ms | ~100 M |
+| Plain Python loop | 1,000,000 | 0.71 s | 1.4 M |
+| Event-driven | 50,000 | 0.21 s | 0.24 M |
+
+Numba is ~70x faster than the same loop in Python, which is what makes parameter sweeps and walk-forward runs cheap.
+
+```bash
+python -m quantlab.data.ingest --symbols BTC-USD,ETH-USD --timeframe 1h --days 1095
+python -m quantlab.backtest.run --symbol BTC-USD --fast 24 --slow 168
+```
+
+First honest result, 3 years of hourly BTC-USD (26,270 bars, Nov 2023 - Nov 2026), 10 bps fee + 5 bps slippage:
+
+| | Total return | CAGR | Sharpe | Max drawdown | Trades |
+|---|---:|---:|---:|---:|---:|
+| SMA 24/168, long or flat | -10.9% | -3.8% | 0.04 | 57.1% | 254 |
+| Buy and hold | +121.6% | +30.4% | 0.80 | 53.9% | 1 |
+
+A textbook trend rule loses to holding once costs are paid, which is the bar the strategies and models in the next phases have to clear.
+
 ## License
 
 MIT
