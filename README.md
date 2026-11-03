@@ -35,6 +35,26 @@ python -m quantlab.data.ingest --symbols BTC-USD,ETH-USD --timeframe 1h --days 3
 python -m quantlab.data.ingest --db sqlite:///quantlab.db --days 60
 ```
 
+## Live trade stream
+
+```
+Coinbase websocket ──> Go gateway ──XADD──> Redis Stream "trades" ──XREADGROUP──> Python consumer ──> bars (1m)
+   (matches channel)    reconnect w/ backoff     capped ~500k entries     consumer group "bars-1m"      source "coinbase-ws"
+```
+
+- **Gateway** (`gateway/`, Go): subscribes to Coinbase's `matches` channel, normalizes each trade (taker side, UTC ms timestamp), and appends it to a capped Redis Stream. Dropped connections are retried with exponential backoff and jitter; a socket with no data for a minute counts as dead.
+- **Consumer** (`quantlab.stream`, Python): reads the stream through a consumer group and builds 1-minute OHLCV bars on **event time** (the trade's own timestamp), with a 5 s grace period for out-of-order trades. Duplicate trade ids (Coinbase re-sends the last trade after every reconnect) are counted once.
+- **At-least-once**: a message is acked only after the bar it belongs to is written. If the consumer dies, its unacked trades stay pending and are replayed on restart; writing the same bar twice is a no-op.
+
+```bash
+docker compose up -d redis timescaledb
+cd gateway && go build -o bin/gateway ./cmd/gateway && ./bin/gateway -products BTC-USD,ETH-USD
+cd backend && python -m quantlab.stream.consumer
+python -m quantlab.stream.check --symbol BTC-USD   # stream bars vs Coinbase's own 1m candles
+```
+
+Checked live on BTC-USD and ETH-USD for 10 minutes (about 3,600 trades), with the consumer **killed with `Stop-Process -Force` halfway and restarted 40 s later**: every complete minute came out identical (open, high, low, close and volume) to Coinbase's REST 1m candles, including the minutes around the crash. The only difference was the first minute, which is partial because the gateway started mid-minute.
+
 ## License
 
 MIT
