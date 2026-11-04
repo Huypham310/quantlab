@@ -25,7 +25,7 @@ class BacktestResult:
 
 
 @njit(cache=True)
-def _simulate(close, weights, cost_rate, initial_cash):  # pragma: no cover - compiled
+def _simulate(close, weights, cost_rate, initial_cash, band):  # pragma: no cover - compiled
     n = close.shape[0]
     equity = np.empty(n)
     turnover = np.zeros(n)
@@ -41,15 +41,15 @@ def _simulate(close, weights, cost_rate, initial_cash):  # pragma: no cover - co
             eq = eq * grow
             # a 50% position that rose 10% is no longer 50% of equity
             cur_w = cur_w * (1.0 + r) / grow if grow != 0.0 else 0.0
-        # 2) rebalance to the target at the close of t
+        # 2) rebalance to the target at the close of t, unless it's within the no-trade band
         dw = abs(weights[t] - cur_w)
-        if dw > 1e-12:
+        if dw > band and dw > 1e-12:
             c = dw * cost_rate * eq
             costs[t] = c
             turnover[t] = dw
             trades += 1
             eq -= c
-        cur_w = weights[t]
+            cur_w = weights[t]
         equity[t] = eq
     return equity, turnover, costs, trades
 
@@ -59,8 +59,15 @@ def run_vectorized(
     weights: np.ndarray,
     costs: CostModel,
     initial_cash: float = 10_000.0,
+    band: float = 0.0,
 ) -> BacktestResult:
-    """Simulate holding ``weights`` (fraction of equity, negative = short) on ``close`` prices."""
+    """Simulate holding ``weights`` (fraction of equity, negative = short) on ``close`` prices.
+
+    ``band``: skip a rebalance while the held weight is within ``band`` of the target. Without
+    it, a volatility-scaled position trades a sliver every bar and the costs eat the strategy.
+    """
+    if band < 0:
+        raise ValueError("band can't be negative")
     close = np.ascontiguousarray(close, dtype=np.float64)
     weights = np.ascontiguousarray(weights, dtype=np.float64)
     if close.shape != weights.shape or close.ndim != 1:
@@ -72,14 +79,18 @@ def run_vectorized(
     if not np.all(np.isfinite(weights)):
         # NaN weights usually mean an indicator still warming up; make the caller decide
         raise ValueError("weights contain NaN/inf (fill the warm-up period first)")
-    equity, turnover, cost, trades = _simulate(close, weights, costs.rate, float(initial_cash))
+    equity, turnover, cost, trades = _simulate(
+        close, weights, costs.rate, float(initial_cash), float(band)
+    )
     returns = np.diff(equity, prepend=float(initial_cash)) / np.concatenate(
         ([float(initial_cash)], equity[:-1])
     )
     return BacktestResult(equity, returns, turnover, cost, int(trades))
 
 
-def simulate_reference(close, weights, costs: CostModel, initial_cash: float = 10_000.0):
+def simulate_reference(
+    close, weights, costs: CostModel, initial_cash: float = 10_000.0, band: float = 0.0
+):
     """Plain-Python twin of ``_simulate``; slow, only used in tests and the benchmark."""
     eq = initial_cash
     cur_w = 0.0
@@ -90,7 +101,9 @@ def simulate_reference(close, weights, costs: CostModel, initial_cash: float = 1
             grow = 1.0 + cur_w * r
             eq *= grow
             cur_w = cur_w * (1.0 + r) / grow if grow != 0.0 else 0.0
-        eq -= abs(weights[t] - cur_w) * costs.rate * eq
-        cur_w = weights[t]
+        dw = abs(weights[t] - cur_w)
+        if dw > band and dw > 1e-12:
+            eq -= dw * costs.rate * eq
+            cur_w = weights[t]
         equity.append(eq)
     return np.array(equity)
