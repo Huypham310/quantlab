@@ -39,6 +39,7 @@ def run_event_driven(
     strategy: Strategy,
     costs: CostModel,
     initial_cash: float = 10_000.0,
+    band: float = 0.0,
 ) -> tuple[np.ndarray, Portfolio]:
     """Returns the equity after each bar and the final portfolio (with every fill)."""
     pf = Portfolio(cash=initial_cash)
@@ -54,8 +55,8 @@ def run_event_driven(
         # fraction of equity actually held right now, after the market moved
         current_w = pf.units * price / eq if eq > 0 else 0.0
         dw = target_w - current_w
-        # same threshold as the vectorized engine, float noise isn't a trade
-        if abs(dw) > 1e-12 and eq > 0:
+        # same rule as the vectorized engine: no trade inside the band, float noise isn't a trade
+        if abs(dw) > band and abs(dw) > 1e-12 and eq > 0:
             # costs come out of equity first, then the remaining equity is split by weight
             cost = abs(dw) * costs.rate * eq
             eq_after = eq - cost

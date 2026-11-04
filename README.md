@@ -88,6 +88,44 @@ First honest result, 3 years of hourly BTC-USD (26,270 bars, Nov 2023 - Nov 2026
 
 A textbook trend rule loses to holding once costs are paid, which is the bar the strategies and models in the next phases have to clear.
 
+## Strategies and walk-forward evaluation
+
+`quantlab.backtest.strategies` has four rule families, each a function of past closes only (a test shocks future prices and checks no past weight moves):
+
+| Strategy | Rule | Parameter grid |
+|---|---|---|
+| `sma_cross` | long while the fast SMA is above the slow one | fast 12/24/48, slow 96/168/336 |
+| `momentum` | long while the price is above where it was N bars ago | N = 24 ... 720 |
+| `donchian` | long on a new N-bar high, out on a new N-bar low | N = 48 ... 720 |
+| `zscore_reversion` | long below -k sigma of the rolling mean, short above +k, flat at the mean | window 24/72/168, k 1.5/2/2.5 |
+
+Each can be wrapped in **volatility targeting** (scale the position to a 30% annualized target from the last week of returns, capped at 1x) and is traded with a **no-trade band**: the engine only rebalances when the held weight drifts more than 0.10 from the target. Without the band, the volatility-scaled versions rebalanced a sliver every hour (8,000-15,000 trades in two years); with it they trade 120-580 times.
+
+**Walk-forward**: parameters are chosen on a rolling 1-year window by Sharpe, then traded on the next 3 months, and the out-of-sample pieces are stitched into one curve. "IS" below is the flattering number: the best parameters picked on the whole history and scored on the same bars.
+
+```bash
+python -m quantlab.backtest.research --symbol ETH-USD
+```
+
+Out of sample Nov 2024 - Nov 2026 (17,510 hourly bars), 15 bps per trade:
+
+| | BTC IS Sharpe | BTC WF Sharpe | BTC WF return | ETH IS Sharpe | ETH WF Sharpe | ETH WF return | ETH WF max DD |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| sma_cross | 0.09 | -0.33 | -24.8% | 0.50 | -0.71 | -55.7% | 71.8% |
+| momentum | -0.10 | -0.92 | -45.1% | 1.00 | **0.66** | **+46.6%** | 47.5% |
+| donchian | 0.64 | -0.33 | -26.0% | 1.30 | 0.05 | -12.6% | 61.0% |
+| donchian + vol target | 0.50 | -0.39 | -20.1% | 0.50 | **0.53** | **+20.3%** | **32.8%** |
+| zscore_reversion | -0.06 | -0.58 | -42.1% | -0.28 | -0.86 | -70.0% | 77.6% |
+| buy and hold | | 0.36 | +12.7% | | 0.27 | -7.5% | 69.2% |
+
+What this says:
+
+- **In-sample numbers lie.** ETH Donchian looks like a Sharpe 1.30 strategy with hindsight; traded walk-forward it is 0.05.
+- **Nothing beats holding BTC** out of sample after costs; on ETH, momentum and volatility-targeted Donchian do, with roughly half of buy-and-hold's drawdown for the latter.
+- **Volatility targeting mostly buys smaller drawdowns**, not higher returns.
+
+These are the baselines the ML signals in the next phase have to beat.
+
 ## License
 
 MIT
