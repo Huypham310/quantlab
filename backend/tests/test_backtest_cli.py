@@ -23,6 +23,21 @@ def test_run_without_data_says_what_to_do(engine):
         run.main(["--db", str(engine.url)])
 
 
+def test_research_table_and_json(engine, capsys):
+    from quantlab.backtest import research
+
+    upsert_bars(engine, make_bars(1_500), "coinbase", "BTC-USD", "1h")
+    args = ["--db", str(engine.url), "--train-days", "30", "--test-days", "10"]
+    research.main(args)
+    out = capsys.readouterr().out
+    for name in ("momentum+vt", "donchian", "buy_and_hold"):
+        assert name in out
+    research.main([*args, "--json"])
+    rows = json.loads(capsys.readouterr().out)
+    assert rows["momentum"]["walk_forward"]["trades"] >= 0
+    assert len(rows["momentum"]["params_chosen"]) >= 1
+
+
 def test_bench_smoke(capsys):
     bench.main(["--bars", "5000", "--event-bars", "500"])
     out = capsys.readouterr().out
