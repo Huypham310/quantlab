@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.7", "fakeredis>=2.26", "hypothesis>=6.120"]
+# ML signals; torch is big, so it stays optional (CPU wheels are enough for the LSTM)
+ml = ["lightgbm>=4.5", "optuna>=4.0", "scikit-learn>=1.5", "scipy>=1.13", "torch>=2.5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
