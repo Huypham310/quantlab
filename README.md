@@ -159,6 +159,41 @@ What this says:
 
 Reports with per-fold parameters and metrics are written to `backend/reports/`.
 
+## API
+
+FastAPI for requests, Celery (Redis broker + result backend) for anything that takes more than a moment:
+
+```bash
+uvicorn quantlab.api.app:app --port 8000
+celery -A quantlab.worker worker --loglevel info --pool solo     # --pool solo on Windows
+```
+
+| Endpoint | What |
+|---|---|
+| `GET /health` | API + database check |
+| `GET /symbols` | stored symbol / timeframe pairs with bar counts and date range (cached 5 s) |
+| `GET /bars/{symbol}?timeframe=1h&limit=500&end=...` | newest N bars, oldest first |
+| `GET /strategies` | strategy library with parameters and walk-forward grids |
+| `POST /backtests` | queue a backtest (strategy + params, vol target, no-trade band, costs) -> `202 {job_id}` |
+| `POST /models/train` | queue a walk-forward LightGBM / LSTM training run -> `202 {job_id}` |
+| `GET /jobs/{id}` | `PENDING` / `STARTED` / `PROGRESS` (folds done so far) / `SUCCESS` (result) / `FAILURE` (error) |
+| `WS /ws/jobs/{id}` | pushes the job status whenever it changes, closes when it's done |
+| `WS /ws/trades/{symbol}?since=$` | live trades for one symbol, read straight from the gateway's Redis Stream |
+
+- Requests are validated before anything is queued: unknown strategies, unknown or missing strategy parameters, out-of-range costs or bands are a `422`, not a job that fails later.
+- The training job reports progress per walk-forward fold (`PROGRESS` with each fold's AUC / IC), so the dashboard can show it live over the job WebSocket.
+- Equity curves come back downsampled to at most 500 points; NaNs (e.g. AUC of a one-class fold) become `null`.
+- Tests run the whole flow in-process: Celery in eager mode with an in-memory result backend, SQLite for the bars, fakeredis for the trade stream.
+
+**Load:** `python -m quantlab.api.loadtest` simulates clients opening a chart (80% "last 500 hourly bars", 20% symbol / strategy lists). One uvicorn worker on the laptop, TimescaleDB in Docker:
+
+| Concurrent clients | p50 | p95 | Throughput |
+|---:|---:|---:|---:|
+| 10 | 46 ms | 91 ms | 204 req/s |
+| 48 (4 client processes) | 235 ms | 310 ms | ~200 req/s |
+
+A single request for 500 bars takes ~10 ms (3.4 ms of it is the SQL round trip into Docker), so one Python worker tops out around 200 req/s and extra clients just queue. Two things learned measuring this: a single-process `httpx` load generator saturates at about the same rate, so the client has to be spread over several processes before the numbers mean anything; and the 500-bar pydantic models I suspected cost only 0.9 ms, while caching `/symbols` (a full-table `GROUP BY`) took it from 17 ms to 1.3 ms. Scaling further means more uvicorn workers behind a Linux host (multi-worker uvicorn on Windows stalled requests in my runs).
+
 ## License
 
 MIT
