@@ -126,6 +126,39 @@ What this says:
 
 These are the baselines the ML signals in the next phase have to beat.
 
+## ML signals
+
+`quantlab.model` predicts the sign of the next 24-hour return from 19 backward-looking features (returns over 1 h - 1 week, realized volatility and its ratio, z-scores against 1-day / 1-week means, position in the 24 h range, volume z-score, hour / weekday as sin-cos):
+
+- **Purged walk-forward:** same rolling 1-year train / 3-month test windows as above. A label covers 24 bars, so the 24 rows before every boundary (train -> validation -> test) are dropped; otherwise the model trains on returns that overlap the test period. A test checks every fold's last training label ends before its validation and test rows.
+- **LightGBM**, tuned per fold with Optuna (TPE, 20 trials, early stopping on validation log loss) over a deliberately regularized space (4-32 leaves, at least 50 rows per leaf).
+- **LSTM** (PyTorch, 1 layer) over the last 48 bars of standardized features, tuned per fold with Optuna (6 trials: hidden 16/32/64, learning rate, dropout), early stopping on validation loss.
+- P(up) is averaged over the last 12 hours and traded long-only (long when > 0.5), through the same Numba backtester and 15 bps costs.
+
+```bash
+pip install -e "backend[dev,ml]"
+python -m quantlab.model.run --symbol ETH-USD --model lstm --trials 6
+```
+
+Out of sample Nov 2024 - Nov 2026 (17,341 bars; starts a week later than the table above because of the feature warm-up, which changes buy-and-hold noticeably for BTC):
+
+| | AUC | Rank IC | Sharpe | Return | Sharpe before costs | Return before costs | Position changes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| BTC LightGBM | 0.501 | +0.003 | -0.35 | -34.2% | 0.24 | +3.8% | 304 |
+| BTC LSTM | 0.520 | +0.030 | -0.35 | -30.7% | **0.48** | **+23.3%** | 384 |
+| BTC buy and hold | | | 0.22 | -0.5% | | | 1 |
+| ETH LightGBM | 0.515 | +0.013 | -0.82 | -71.1% | -0.33 | -50.2% | 362 |
+| ETH LSTM | 0.538 | +0.061 | -0.24 | -38.2% | **0.46** | **+22.6%** | 457 |
+| ETH buy and hold | | | 0.08 | -28.3% | | | 1 |
+
+What this says:
+
+- **LightGBM finds nothing** (AUC 0.50-0.52). Its splits lean on volatility features (1-week realized vol is 20-32% of the gain), which predict how much the price moves, not which way.
+- **The LSTM has a small real edge** (AUC 0.52-0.54, positive rank IC on both coins): before costs it beats buy-and-hold on both, with a Sharpe around 0.47.
+- **Costs eat all of it.** 380-460 full position changes in two years at 15 bps each is a 57-69% drag, more than the edge. The fix is to trade less (a wider dead zone around 0.5, longer smoothing, sizing by confidence), but choosing those on this out-of-sample period would be fitting to it, so that's left for a separate validation period.
+
+Reports with per-fold parameters and metrics are written to `backend/reports/`.
+
 ## License
 
 MIT
