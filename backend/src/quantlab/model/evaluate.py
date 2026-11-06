@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -50,6 +51,7 @@ def run_walk_forward(
     names: list[str] | None = None,
     seq_len: int = 48,
     verbose: bool = False,
+    on_fold: Callable[[dict], None] | None = None,
 ) -> ModelRun:
     """Fit one model per fold on its train rows (tuned on its val rows), predict its test rows."""
     if kind not in ("lgbm", "lstm"):
@@ -80,6 +82,8 @@ def run_walk_forward(
             "seconds": round(time.perf_counter() - start, 1),
         }
         run.folds.append(fold)
+        if on_fold is not None:
+            on_fold(fold)
         if verbose:
             print(
                 f"  fold {k:2d} test {s.test_range}  val_loss {fold['val_loss']:.4f}  "

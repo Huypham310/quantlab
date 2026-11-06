@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from quantlab.backtest.costs import CostModel
 from quantlab.backtest.metrics import bars_per_year
@@ -22,6 +24,65 @@ from quantlab.model.features import forward_returns, make_features
 from quantlab.model.splits import walk_forward_splits
 
 WARMUP = 24 * 7 + 1  # longest feature window (168 bars) + 1
+
+
+def train_signal(
+    bars: pl.DataFrame,
+    model: str = "lgbm",
+    timeframe: str = "1h",
+    horizon: int = 24,
+    train_days: int = 365,
+    test_days: int = 90,
+    trials: int = 20,
+    mode: str = "long_only",
+    threshold: float = 0.0,
+    smooth: int = 12,
+    fee_bps: float = 10.0,
+    slippage_bps: float = 5.0,
+    seed: int = 0,
+    verbose: bool = False,
+    on_fold: Callable[[dict], None] | None = None,
+) -> dict:
+    """Walk-forward train + out-of-sample evaluation; returns the report (json-safe dict).
+
+    Shared by the CLI and the API's background job, so both give the same numbers.
+    """
+    close = bars["close"].to_numpy()
+    feats = make_features(bars)
+    fwd = forward_returns(close, horizon)
+    per_day = 24 if timeframe == "1h" else 1
+    splits = walk_forward_splits(
+        len(close), train_days * per_day, test_days * per_day, horizon, start=WARMUP
+    )
+    if verbose:
+        print(
+            f"{len(close)} bars, {len(feats.names)} features, {len(splits)} folds, "
+            f"model {model}, horizon {horizon}",
+            flush=True,
+        )
+    run = run_walk_forward(
+        feats.x, fwd, splits, model, trials, seed, feats.names, verbose=verbose, on_fold=on_fold
+    )
+
+    oos = splits[0].test_range[0]
+    costs = CostModel(fee_bps, slippage_bps)
+    w = proba_to_weights(run.proba, mode, threshold, smooth)
+    return {
+        "model": model,
+        "horizon": horizon,
+        "oos_start": str(bars["ts"][oos]),
+        "oos_end": str(bars["ts"][-1]),
+        "bars_per_year": bars_per_year(timeframe),
+        "prediction": prediction_metrics(run.proba[oos:], fwd[oos:]),
+        "backtest": {
+            "model": evaluate(close, w, costs, timeframe, oos),
+            # same trades with zero costs: separates "no edge" from "edge eaten by fees"
+            "model_gross": evaluate(close, w, CostModel(0.0, 0.0), timeframe, oos),
+            "buy_and_hold": evaluate(close, np.ones_like(close), costs, timeframe, oos),
+        },
+        "folds": run.folds,
+        "importance": run.importance,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -47,66 +108,47 @@ def main(argv: list[str] | None = None) -> None:
     engine = make_engine(args.db)
     bars = load_bars(engine, args.source, args.symbol, args.timeframe)
     engine.dispose()  # training takes minutes, no reason to hold the connection
-    close = bars["close"].to_numpy()
-    feats = make_features(bars)
-    fwd = forward_returns(close, args.horizon)
-    per_day = 24 if args.timeframe == "1h" else 1
-    splits = walk_forward_splits(
-        len(close),
-        args.train_days * per_day,
-        args.test_days * per_day,
+    print(f"{args.symbol} {args.timeframe}:", end=" ")
+    report = train_signal(
+        bars,
+        args.model,
+        args.timeframe,
         args.horizon,
-        start=WARMUP,
-    )
-    print(
-        f"{args.symbol} {args.timeframe}: {len(close)} bars, {len(feats.names)} features, "
-        f"{len(splits)} folds, model {args.model}, horizon {args.horizon}",
-        flush=True,
-    )
-    run = run_walk_forward(
-        feats.x, fwd, splits, args.model, args.trials, args.seed, feats.names, verbose=True
+        args.train_days,
+        args.test_days,
+        args.trials,
+        args.mode,
+        args.threshold,
+        args.smooth,
+        args.fee_bps,
+        args.slippage_bps,
+        args.seed,
+        verbose=True,
     )
 
-    oos = splits[0].test_range[0]
-    pred = prediction_metrics(run.proba[oos:], fwd[oos:])
-    costs = CostModel(args.fee_bps, args.slippage_bps)
-    w = proba_to_weights(run.proba, args.mode, args.threshold, args.smooth)
-    model_bt = evaluate(close, w, costs, args.timeframe, oos)
-    # same trades with zero costs: separates "no edge" from "edge eaten by fees"
-    gross_bt = evaluate(close, w, CostModel(0.0, 0.0), args.timeframe, oos)
-    hold_bt = evaluate(close, np.ones_like(close), costs, args.timeframe, oos)
-
+    pred, bt = report["prediction"], report["backtest"]
     print(
-        f"\nout of sample {bars['ts'][oos]} -> {bars['ts'][-1]}: auc {pred['auc']:.3f}, "
+        f"\nout of sample {report['oos_start']} -> {report['oos_end']}: auc {pred['auc']:.3f}, "
         f"accuracy {pred['accuracy']:.3f} (base rate {pred['base_rate']:.3f}), ic {pred['ic']:+.3f}"
     )
     print(f"{'':16s} {'sharpe':>7s} {'return':>8s} {'maxDD':>7s} {'trades':>7s} {'exposure':>9s}")
     rows = (
-        (f"{args.model} {args.mode}", model_bt),
-        ("  before costs", gross_bt),
-        ("buy and hold", hold_bt),
+        (f"{args.model} {args.mode}", bt["model"]),
+        ("  before costs", bt["model_gross"]),
+        ("buy and hold", bt["buy_and_hold"]),
     )
     for name, m in rows:
         print(
             f"{name:16s} {m['sharpe']:7.2f} {m['total_return']:8.1%} {m['max_drawdown']:7.1%} "
             f"{m['trades']:7d} {m.get('exposure', float('nan')):9.2f}"
         )
-    if run.importance:
-        top = ", ".join(f"{k} {v:.2f}" for k, v in list(run.importance.items())[:6])
+    if report["importance"]:
+        top = ", ".join(f"{k} {v:.2f}" for k, v in list(report["importance"].items())[:6])
         print(f"top features (gain share): {top}")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    report = {
-        "symbol": args.symbol,
-        "model": args.model,
-        "args": vars(args) | {"db": None},
-        "bars_per_year": bars_per_year(args.timeframe),
-        "prediction": pred,
-        "backtest": {"model": model_bt, "model_gross": gross_bt, "buy_and_hold": hold_bt},
-        "folds": run.folds,
-        "importance": run.importance,
-    }
+    report = {"symbol": args.symbol, "args": vars(args) | {"db": None}} | report
     path = out / f"model_{args.symbol}_{args.model}_h{args.horizon}.json"
     path.write_text(json.dumps(report, indent=2, default=str))
     print(f"report -> {path}")
