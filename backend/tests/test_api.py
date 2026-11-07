@@ -143,6 +143,57 @@ def test_loadtest_against_the_app_in_process(client):
     assert 0 < r["p50_ms"] <= r["p95_ms"] <= r["p99_ms"]
 
 
+def test_paper_trading_endpoints(client):
+    from quantlab.paper import PaperBroker
+
+    broker = PaperBroker()
+    api.app.dependency_overrides[api.get_broker] = lambda: broker
+    t = int(datetime.now(UTC).timestamp() * 1000)
+    broker.on_trade("ETH-USD", 2_000.0, t)
+
+    r = client.post("/paper/orders", json={"symbol": "eth-usd", "side": "buy", "qty": 1.0})
+    assert r.status_code == 201 and r.json()["status"] == "open"
+    rejected = client.post("/paper/orders", json={"symbol": "ETH-USD", "side": "buy", "qty": 50})
+    assert rejected.json()["status"] == "rejected" and "notional" in rejected.json()["reason"]
+    # malformed requests never reach the risk engine
+    bad = {"symbol": "ETH-USD", "side": "buy", "qty": 1, "type": "limit"}  # no price
+    assert client.post("/paper/orders", json=bad).status_code == 422
+
+    broker.on_trade("ETH-USD", 2_010.0, t + 1)  # fills the market order
+    account = client.get("/paper/account").json()
+    assert account["positions"] == {"ETH-USD": 1.0} and account["breaches"] == 0
+    assert [o["id"] for o in client.get("/paper/orders?status=filled").json()] == [1]
+
+    resting = client.post(
+        "/paper/orders",
+        json={"symbol": "ETH-USD", "side": "sell", "qty": 0.5, "type": "limit",
+              "limit_price": 2_050},
+    ).json()  # fmt: skip
+    assert client.delete(f"/paper/orders/{resting['id']}").status_code == 204
+    assert client.delete(f"/paper/orders/{resting['id']}").status_code == 404
+
+
+def test_paper_feed_reads_the_trade_stream():
+    import asyncio
+
+    from quantlab.paper import PaperBroker
+    from quantlab.paper.feed import feed_trades
+
+    server = fakeredis.FakeServer()
+    sync = fakeredis.FakeRedis(server=server)
+    for i, (sym, px) in enumerate([("ETH-USD", 2000.0), ("SOL-USD", 150.0), ("ETH-USD", 2005.0)]):
+        sync.xadd(
+            "trades",
+            {"exchange": "coinbase", "symbol": sym, "trade_id": i, "price": px, "size": 1,
+             "side": "buy", "ts_ms": 1_700_000_000_000 + i},
+        )  # fmt: skip
+    broker = PaperBroker()
+    redis = fakeredis.aioredis.FakeRedis(server=server)
+    n = asyncio.run(feed_trades(redis, broker, since="0", max_trades=2))
+    assert n == 2  # SOL isn't a paper symbol, skipped
+    assert broker.last == {"ETH-USD": 2005.0}
+
+
 def test_job_helpers():
     validate_strategy("buy_and_hold", {})
     with pytest.raises(ValueError):

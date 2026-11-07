@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -27,6 +28,8 @@ from quantlab.api.schemas import (
     Bar,
     JobCreated,
     JobStatus,
+    PaperOrder,
+    PaperOrderRequest,
     StrategyInfo,
     SymbolInfo,
     TrainRequest,
@@ -35,10 +38,32 @@ from quantlab.backtest.strategies import LIBRARY
 from quantlab.config import get_settings
 from quantlab.data.store import bars as bars_table
 from quantlab.data.store import make_engine
+from quantlab.paper.broker import PaperBroker
+from quantlab.paper.feed import feed_trades
 from quantlab.stream.trades import parse_entry
 from quantlab.worker import celery_app, run_backtest, train_model
 
-app = FastAPI(title="QuantLab", version="0.1.0")
+paper_broker = PaperBroker()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """With QUANTLAB_PAPER_LIVE=1 the paper broker follows the live trade stream."""
+    task = None
+    if get_settings().paper_live:
+        task = asyncio.create_task(
+            feed_trades(get_redis(), paper_broker, get_settings().trades_stream)
+        )
+    yield
+    if task is not None:
+        task.cancel()
+
+
+app = FastAPI(title="QuantLab", version="0.1.0", lifespan=lifespan)
+
+
+def get_broker() -> PaperBroker:
+    return paper_broker
 
 
 @lru_cache
@@ -167,6 +192,33 @@ def job_status(job_id: str) -> JobStatus:
 def get_job(job_id: str) -> JobStatus:
     """Celery can't tell an unknown id from a queued job, so both read as PENDING."""
     return job_status(job_id)
+
+
+@app.post("/paper/orders", response_model=PaperOrder, status_code=201)
+def paper_submit(req: PaperOrderRequest, broker: PaperBroker = Depends(get_broker)) -> PaperOrder:
+    """Risk-checked paper order. A rejected order is still a 201 with status "rejected" and the
+    reason: the request was fine, the risk engine said no."""
+    order = broker.submit(req.symbol, req.side, req.qty, req.type, req.limit_price)
+    return PaperOrder(**asdict(order))
+
+
+@app.get("/paper/orders", response_model=list[PaperOrder])
+def paper_orders(
+    status: str | None = None, broker: PaperBroker = Depends(get_broker)
+) -> list[PaperOrder]:
+    orders = broker.orders.values()
+    return [PaperOrder(**asdict(o)) for o in orders if status is None or o.status == status]
+
+
+@app.delete("/paper/orders/{order_id}", status_code=204)
+def paper_cancel(order_id: int, broker: PaperBroker = Depends(get_broker)) -> None:
+    if not broker.cancel(order_id):
+        raise HTTPException(404, f"no open order {order_id}")
+
+
+@app.get("/paper/account")
+def paper_account(broker: PaperBroker = Depends(get_broker)) -> dict:
+    return broker.snapshot()
 
 
 @app.websocket("/ws/jobs/{job_id}")

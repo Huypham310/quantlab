@@ -76,6 +76,40 @@ class TrainRequest(BaseModel):
         return v.upper()
 
 
+class PaperOrderRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    side: Literal["buy", "sell"]
+    qty: float = Field(gt=0)
+    type: Literal["market", "limit"] = "market"
+    limit_price: float | None = Field(default=None, gt=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def _upper(cls, v: str) -> str:
+        return v.upper()
+
+    @model_validator(mode="after")
+    def _limit_needs_price(self) -> PaperOrderRequest:
+        if (self.type == "limit") != (self.limit_price is not None):
+            raise ValueError("limit orders need limit_price, market orders must not have one")
+        return self
+
+
+class PaperOrder(BaseModel):
+    id: int
+    symbol: str
+    side: str
+    qty: float
+    type: str
+    limit_price: float | None
+    created_ms: int
+    status: str
+    filled_qty: float
+    avg_price: float
+    reason: str
+    marketable: bool
+
+
 class JobCreated(BaseModel):
     job_id: str
     kind: Literal["backtest", "train"]

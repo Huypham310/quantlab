@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     # tick stream mà gateway Go ghi vào
     trades_stream: str = "trades"
+    # feed the paper broker from the live trade stream inside the API process
+    paper_live: bool = False
 
 
 @lru_cache
