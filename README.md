@@ -194,6 +194,44 @@ celery -A quantlab.worker worker --loglevel info --pool solo     # --pool solo o
 
 A single request for 500 bars takes ~10 ms (3.4 ms of it is the SQL round trip into Docker), so one Python worker tops out around 200 req/s and extra clients just queue. Two things learned measuring this: a single-process `httpx` load generator saturates at about the same rate, so the client has to be spread over several processes before the numbers mean anything; and the 500-bar pydantic models I suspected cost only 0.9 ms, while caching `/symbols` (a full-table `GROUP BY`) took it from 17 ms to 1.3 ms. Scaling further means more uvicorn workers behind a Linux host (multi-worker uvicorn on Windows stalled requests in my runs).
 
+## Paper trading
+
+`quantlab.paper.PaperBroker` is an in-memory account (cash, positions, open orders, fills) that trades against live prints from the gateway's Redis Stream (`QUANTLAB_PAPER_LIVE=1` runs the feed inside the API) or a replayed stream.
+
+**Pre-trade risk checks** (`quantlab.paper.risk`), all against the worst case of the current position plus every open order on the same side filling:
+
+| Check | Default |
+|---|---|
+| allowed symbols | BTC-USD, ETH-USD |
+| max notional per order | $5,000 (market orders checked at last + 1%) |
+| max position per symbol | $20,000 |
+| max gross leverage | 2x equity |
+| order rate | 120 per sliding minute |
+| limit price band | within 5% of the last trade |
+| daily loss kill switch | at -5%: cancel open orders, only reducing orders allowed |
+
+**Fill model:** market orders fill on the next print plus 5 bps slippage; a limit that's marketable on arrival takes the print (never worse than its limit); a resting limit fills at its own price when the market trades through it; 10 bps fees on every fill. If a market order would still overshoot the position limit (the price jumped between check and fill), the fill is clamped and the rest cancelled, so the limit holds by construction.
+
+Endpoints: `POST /paper/orders`, `GET /paper/orders?status=`, `DELETE /paper/orders/{id}`, `GET /paper/account`.
+
+**Testing it properly took three rounds:**
+
+1. A Hypothesis property test throws random sequences of market / limit orders, cancels and price jumps of up to +/-25% at the broker and checks that no position-growing fill ever exceeds the limit and that cash and positions are exactly what the fills say. A mutation check (disabling the fill clamp) showed the first version **couldn't fail**: order sizes in raw coins got almost everything rejected and Hypothesis kept lists short, so positions never got near the limit. Sizing orders relative to the limit and requiring at least 20 actions fixed that; the mutant is now caught within seconds.
+2. The stronger test then found a real accounting bug: buying back a short whose notional was above the limit only because the price had run up counted as a "breach". Only fills that *grow* a position can breach now.
+3. The replay below found the other one: marketable limit orders were filling *at their limit*, paying up to 2% above the market every time, which made a random trader bleed equity and trip the kill switch every hour.
+
+```text
+$ python -m quantlab.paper.replay --ticks 5000000     # ~5.8 days of 100 ms prints, two symbols
+5,000,000 ticks, 50,228 orders, 29,424 fills in 8.8 s; breaches: 0, sessions stopped by the kill switch: 37
+submit: p50 4.1 us, p99 17.1 us | on_trade: p50 0.8 us, p99 2.0 us
+    40,653  accepted
+     6,421  daily loss limit hit: only reducing orders allowed
+     2,504  position limit
+       650  gross leverage limit
+```
+
+The replay trader is random and over-active on purpose (the loss limit resets every simulated hour), so it trips every check; the point is that over 50,000 orders and rare 3-8% jumps no limit was breached, and a risk check plus bookkeeping takes ~4 µs.
+
 ## License
 
 MIT
