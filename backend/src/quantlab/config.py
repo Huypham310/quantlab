@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     trades_stream: str = "trades"
     # feed the paper broker from the live trade stream inside the API process
     paper_live: bool = False
+    # comma-separated origins for the Next.js dashboard (and any other browser client)
+    cors_origins: str = "http://localhost:3000"
 
 
 @lru_cache
