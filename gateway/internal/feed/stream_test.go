@@ -63,7 +63,10 @@ func TestStreamDeliversTradesAndReconnects(t *testing.T) {
 
 	out := make(chan Trade, 16)
 	done := make(chan error, 1)
-	go func() { done <- Stream(ctx, url, []string{"ETH-USD"}, out) }()
+	var reconnects atomic.Int32
+	go func() {
+		done <- Stream(ctx, url, []string{"ETH-USD"}, out, WithOnReconnect(func() { reconnects.Add(1) }))
+	}()
 
 	// 2 trades from the first connection, then 2 more after the reconnect (~1s backoff)
 	var got []Trade
@@ -82,6 +85,10 @@ func TestStreamDeliversTradesAndReconnects(t *testing.T) {
 
 	if conns.Load() < 2 {
 		t.Fatalf("expected a reconnect, saw %d connection(s)", conns.Load())
+	}
+	// the metrics hook fires once per dropped connection
+	if reconnects.Load() < 1 {
+		t.Fatalf("WithOnReconnect never fired")
 	}
 	if got[0].Symbol != "ETH-USD" || got[0].TradeID != 100 || got[2].TradeID != 200 {
 		t.Fatalf("unexpected trades: %+v", got)

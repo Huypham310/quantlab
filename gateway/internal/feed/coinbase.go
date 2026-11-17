@@ -79,14 +79,33 @@ func ParseMessage(data []byte) (Trade, error) {
 	}, nil
 }
 
+type options struct {
+	onReconnect func()
+}
+
+// Option tweaks Stream without changing its core signature.
+type Option func(*options)
+
+// WithOnReconnect calls fn every time the connection is lost and a retry is scheduled.
+func WithOnReconnect(fn func()) Option {
+	return func(o *options) { o.onReconnect = fn }
+}
+
 // Stream connects, subscribes to "matches" for the products, and sends trades to out until
 // ctx is cancelled. Dropped connections are retried with exponential backoff.
-func Stream(ctx context.Context, url string, products []string, out chan<- Trade) error {
+func Stream(ctx context.Context, url string, products []string, out chan<- Trade, opts ...Option) error {
+	var cfg options
+	for _, o := range opts {
+		o(&cfg)
+	}
 	backoff := NewBackoff(time.Second, 30*time.Second)
 	for {
 		err := streamOnce(ctx, url, products, out, backoff)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if cfg.onReconnect != nil {
+			cfg.onReconnect() // counted for metrics: how flaky is the feed?
 		}
 		wait := backoff.Next()
 		log.Printf("feed: disconnected (%v), reconnecting in %s", err, wait.Round(time.Millisecond))
