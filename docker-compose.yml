@@ -28,6 +28,41 @@ services:
       interval: 5s
       retries: 10
 
+  # ---- observability (docker compose up -d prometheus grafana) -------------------------------
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d   # plenty for a local demo
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    # the apps run on the host; "host-gateway" makes host.docker.internal resolve on Linux
+    # too (Docker Desktop on Windows/macOS already provides it)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    depends_on:
+      - prometheus
+    environment:
+      # local demo only: login is admin / admin unless GRAFANA_ADMIN_PASSWORD is set in .env
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "3001:3000"   # 3001 because the Next.js dashboard already uses 3000
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
 volumes:
   tsdb-data:
   redis-data:
+  prometheus-data:
+  grafana-data:
