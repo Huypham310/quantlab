@@ -18,6 +18,7 @@ from functools import lru_cache
 
 from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
@@ -60,6 +61,17 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="QuantLab", version="0.1.0", lifespan=lifespan)
+
+# the Next.js dashboard (localhost:3000) talks to this API; WebSocket upgrades need the
+# same origins. Override with QUANTLAB_CORS_ORIGINS=a,b if you host the UI elsewhere.
+_cors = [o.strip() for o in get_settings().cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors or ["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_broker() -> PaperBroker:

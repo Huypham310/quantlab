@@ -1,0 +1,25 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f7f7f5;
+  --ink: #18181b;
+  --muted: #71717a;
+  --accent: #0f766e;
+}
+
+body {
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #ccfbf1 0%, transparent 55%),
+    radial-gradient(900px 400px at 100% 0%, #e4e4e7 0%, transparent 50%),
+    var(--bg);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-display {
+  font-family: Newsreader, Georgia, serif;
+}
