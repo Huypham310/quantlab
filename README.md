@@ -232,6 +232,27 @@ submit: p50 4.1 us, p99 17.1 us | on_trade: p50 0.8 us, p99 2.0 us
 
 The replay trader is random and over-active on purpose (the loss limit resets every simulated hour), so it trips every check; the point is that over 50,000 orders and rare 3-8% jumps no limit was breached, and a risk check plus bookkeeping takes ~4 µs.
 
+## Dashboard
+
+Next.js app in `web/` (App Router, TanStack Query, TradingView lightweight-charts):
+
+```bash
+# terminal 1: API (CORS allows localhost:3000 by default)
+cd backend && uvicorn quantlab.api.app:app --reload --port 8000
+
+# terminal 2: UI
+cd web && cp .env.local.example .env.local && npm install && npm run dev
+```
+
+| page | what |
+|---|---|
+| `/` Live | hourly candles + last print from `WS /ws/trades/{symbol}` |
+| `/backtest` | pick a strategy, start a Celery job, follow `WS /ws/jobs/{id}` |
+| `/paper` | account snapshot, market order ticket, open-order cancel |
+
+`QUANTLAB_CORS_ORIGINS` (comma-separated) overrides the allowed browser origins.
+
 ## License
+
 
 MIT
