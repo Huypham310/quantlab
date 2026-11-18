@@ -19,10 +19,12 @@ from functools import lru_cache
 from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from redis import asyncio as aioredis
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 
+from quantlab.api import metrics
 from quantlab.api.jobs import strategy_params
 from quantlab.api.schemas import (
     BacktestRequest,
@@ -72,10 +74,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# added last = outermost, so the latency also covers CORS handling
+app.add_middleware(metrics.MetricsMiddleware)
 
 
 def get_broker() -> PaperBroker:
     return paper_broker
+
+
+# paper gauges are read from the broker at scrape time (lambda: tests may swap the global)
+metrics.register_paper(lambda: paper_broker)
 
 
 @lru_cache
@@ -105,6 +113,14 @@ def health(engine: Engine = Depends(get_engine)) -> dict:
     except Exception:  # noqa: BLE001 - health check reports, never raises
         db = False
     return {"status": "ok" if db else "degraded", "database": db}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics() -> Response:
+    """Prometheus scrape target. `async def` on purpose: it runs on the event loop, the same
+    thread that feeds the broker live trades, so the paper gauges read a consistent state."""
+    body, content_type = metrics.render()
+    return Response(body, media_type=content_type)
 
 
 SYMBOLS_TTL_S = 5.0
@@ -177,12 +193,14 @@ def strategies() -> list[StrategyInfo]:
 @app.post("/backtests", response_model=JobCreated, status_code=202)
 def create_backtest(req: BacktestRequest) -> JobCreated:
     task = run_backtest.delay(req.model_dump(mode="json"))
+    metrics.JOBS_SUBMITTED.labels("backtest").inc()
     return JobCreated(job_id=task.id, kind="backtest")
 
 
 @app.post("/models/train", response_model=JobCreated, status_code=202)
 def create_training(req: TrainRequest) -> JobCreated:
     task = train_model.delay(req.model_dump(mode="json"))
+    metrics.JOBS_SUBMITTED.labels("train").inc()
     return JobCreated(job_id=task.id, kind="train")
 
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import redis
 from sqlalchemy.engine import Engine
 
+from quantlab.api.metrics import record_consumer_stats, start_metrics_server
 from quantlab.config import get_settings
 from quantlab.data.store import init_db, make_engine, upsert_bars
 from quantlab.stream.aggregator import AddResult, MinuteBarAggregator, OpenBar, bars_frame
@@ -120,6 +121,7 @@ class TradeConsumer:
         if ack_now:
             # only after the write above succeeded
             self.r.xack(self.stream, self.group, *ack_now)
+        record_consumer_stats(stats, self.agg.open_bars)
         return stats
 
     def _write(self, closed: list[OpenBar]) -> int:
@@ -163,9 +165,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--group", default="bars-1m")
     p.add_argument("--consumer", default="worker-1")
     p.add_argument("--grace-ms", type=int, default=5_000)
+    p.add_argument(
+        "--metrics-port",
+        type=int,
+        default=settings.consumer_metrics_port,
+        help="Prometheus /metrics port, 0 to disable",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    start_metrics_server(args.metrics_port)
     engine = make_engine(args.db)
     init_db(engine)
     consumer = TradeConsumer(

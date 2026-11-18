@@ -5,11 +5,13 @@ celery -A quantlab.worker worker --loglevel info --pool solo      # --pool solo 
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 from celery import Celery
+from celery.signals import task_postrun, task_prerun, worker_ready
 
-from quantlab.api import jobs
+from quantlab.api import jobs, metrics
 from quantlab.config import get_settings
 from quantlab.data.store import load_bars, make_engine
 
@@ -22,6 +24,31 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_acks_late=True,
 )
+
+
+_started: dict[str, float] = {}  # task id -> perf_counter at start
+
+
+@task_prerun.connect
+def _job_started(task_id=None, **_) -> None:
+    _started[task_id] = time.perf_counter()
+
+
+@task_postrun.connect
+def _job_finished(task_id=None, task=None, state=None, **_) -> None:
+    """Count every finished task by outcome and time it. Runs in the worker process (and
+    inline in the API process when Celery is eager, as in the tests)."""
+    start = _started.pop(task_id, None)
+    name = task.name if task is not None else "unknown"
+    metrics.JOBS_DONE.labels(name, (state or "unknown").lower()).inc()
+    if start is not None:
+        metrics.JOB_DURATION.labels(name).observe(time.perf_counter() - start)
+
+
+@worker_ready.connect
+def _serve_metrics(**_) -> None:
+    # the worker has no HTTP server, so expose the registry on its own port for Prometheus
+    metrics.start_metrics_server(settings.worker_metrics_port)
 
 
 def _bars(req: dict):

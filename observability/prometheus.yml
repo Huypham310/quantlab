@@ -1,0 +1,29 @@
+# Prometheus for the local demo. The apps run on the host (uvicorn, Go gateway, ...) and
+# Prometheus runs in Docker, so it reaches them through host.docker.internal
+# (see extra_hosts in docker-compose.yml; works on Docker Desktop for Windows and Linux).
+global:
+  scrape_interval: 5s      # short on purpose: the demo should react within seconds
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: quantlab-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+
+  - job_name: quantlab-gateway
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+
+  # celery worker: only up once the worker has started (worker_ready signal opens the port)
+  - job_name: quantlab-worker
+    static_configs:
+      - targets: ["host.docker.internal:9101"]
+
+  - job_name: quantlab-consumer
+    static_configs:
+      - targets: ["host.docker.internal:9102"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

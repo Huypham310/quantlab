@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     paper_live: bool = False
     # comma-separated origins for the Next.js dashboard (and any other browser client)
     cors_origins: str = "http://localhost:3000"
+    # Prometheus endpoints of the processes that have no HTTP server of their own (0 = off)
+    worker_metrics_port: int = 9101
+    consumer_metrics_port: int = 9102
 
 
 @lru_cache

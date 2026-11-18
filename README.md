@@ -177,6 +177,7 @@ celery -A quantlab.worker worker --loglevel info --pool solo     # --pool solo o
 | `POST /backtests` | queue a backtest (strategy + params, vol target, no-trade band, costs) -> `202 {job_id}` |
 | `POST /models/train` | queue a walk-forward LightGBM / LSTM training run -> `202 {job_id}` |
 | `GET /jobs/{id}` | `PENDING` / `STARTED` / `PROGRESS` (folds done so far) / `SUCCESS` (result) / `FAILURE` (error) |
+| `GET /metrics` | Prometheus metrics (see [Observability](#observability)) |
 | `WS /ws/jobs/{id}` | pushes the job status whenever it changes, closes when it's done |
 | `WS /ws/trades/{symbol}?since=$` | live trades for one symbol, read straight from the gateway's Redis Stream |
 
@@ -251,6 +252,48 @@ cd web && cp .env.local.example .env.local && npm install && npm run dev
 | `/paper` | account snapshot, market order ticket, open-order cancel |
 
 `QUANTLAB_CORS_ORIGINS` (comma-separated) overrides the allowed browser origins.
+
+## Observability
+
+Prometheus + Grafana run in Docker; the apps keep running on the host and Prometheus scrapes them through `host.docker.internal` (the compose file adds it as an `extra_hosts` entry, so it works on Windows and Linux).
+
+```bash
+docker compose up -d redis timescaledb prometheus grafana
+uvicorn quantlab.api.app:app --port 8000                          # API:      :8000/metrics
+cd gateway && go run ./cmd/gateway                                # gateway:  :9100/metrics
+celery -A quantlab.worker worker --pool solo                      # worker:   :9101/metrics
+python -m quantlab.stream.consumer                                # consumer: :9102/metrics
+```
+
+- Grafana: <http://localhost:3001>, login `admin` / `admin` (local demo only; set `GRAFANA_ADMIN_PASSWORD` in `.env` to change it). The Prometheus datasource and the **QuantLab overview** dashboard are provisioned from `observability/grafana/`, nothing to click.
+- Prometheus: <http://localhost:9090> (Status > Targets shows which processes it can reach). Scrapes every 5 s, keeps 7 days.
+- A target that isn't running just shows as `down`; the other panels keep working. If Windows asks about the firewall for the Go gateway or Python on first run, allow private networks, otherwise the container can't reach the host.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `quantlab_http_request_duration_seconds` | histogram | API latency by `method`, `route` template and `status` (websockets and `/metrics` itself are skipped) |
+| `quantlab_paper_equity_usd`, `_cash_usd`, `_fees_paid_usd` | gauge | paper account, read from the broker at scrape time |
+| `quantlab_paper_open_orders`, `quantlab_paper_orders{status}` | gauge | resting orders, and all orders by status |
+| `quantlab_paper_killed` | gauge | 1 while the daily-loss kill switch is on |
+| `quantlab_paper_limit_breaches` | gauge | fills that pushed a position past its limit, must be 0 |
+| `quantlab_jobs_submitted_total{kind}` | counter | backtest / train jobs queued through the API |
+| `quantlab_jobs_total{task,status}`, `quantlab_job_duration_seconds` | counter, histogram | Celery tasks finished by outcome, and how long they took (worker process) |
+| `quantlab_gateway_trades_written_total`, `_trades_failed_total` | counter | trades appended to Redis / lost to a failed write |
+| `quantlab_gateway_reconnects_total` | counter | Coinbase websocket drops |
+| `quantlab_gateway_last_trade_timestamp_seconds` | gauge | timestamp of the last trade, `time() - x` is the feed lag |
+| `quantlab_gateway_redis_write_seconds`, `_channel_backlog` | histogram, gauge | XADD latency, and trades waiting between socket reader and writer |
+| `quantlab_consumer_{messages,trades,duplicates,late,invalid,bars_written}_total` | counter | stream consumer outcomes per entry |
+| `quantlab_consumer_open_bars` | gauge | 1m bars still inside the grace period |
+
+Dashboard rows:
+
+- **Overview**: scrape targets up (5 when everything runs), API p95, 5xx ratio, kill switch state.
+- **API**: requests per second by route, p50 / p95 / p99, status codes (422 = bad input, 404 = unknown symbol), and p95 per route to spot the slow endpoint.
+- **Paper trading**: equity and cash curve, orders by status (a growing `rejected` line means the risk engine is saying no), open orders, fees, and the breach counter that should never leave 0.
+- **Go gateway**: trades per second written vs failed, feed lag (grows when the socket is quiet or dead), reconnects in the last hour, XADD p95 and channel backlog.
+- **Stream consumer and jobs**: consumer throughput (late = arrived after its minute closed, duplicates = reconnect replays), bars written, and Celery job outcomes and p95 duration.
+
+Only the paper gauges are computed at scrape time; everything else is incremented where the event happens. Route labels use the matched template (`/bars/{symbol}`), so cardinality stays bounded no matter how many symbols or job ids are requested.
 
 ## License
 
