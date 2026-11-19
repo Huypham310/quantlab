@@ -1,4 +1,4 @@
-# QuantLab
+﻿# QuantLab
 
 Backtesting and paper-trading platform for equities and crypto, built as a long-running side project.
 
@@ -294,6 +294,42 @@ Dashboard rows:
 - **Stream consumer and jobs**: consumer throughput (late = arrived after its minute closed, duplicates = reconnect replays), bars written, and Celery job outcomes and p95 duration.
 
 Only the paper gauges are computed at scrape time; everything else is incremented where the event happens. Route labels use the matched template (`/bars/{symbol}`), so cardinality stays bounded no matter how many symbols or job ids are requested.
+
+## Testing
+
+| Suite | Tool | Tests | Needs |
+|---|---|---:|---|
+| Backend | pytest (+ Hypothesis) | 140 (14 of them property-based) | nothing: SQLite, fakeredis, mocked HTTP |
+| Gateway | `go test` | 14 | nothing: fake sockets, miniredis |
+| Web unit | vitest | 4 | nothing |
+| Web end-to-end | Playwright (Chromium) | 21 | nothing: every API call and WebSocket is mocked |
+
+Backend line coverage is 93% (`pytest --cov=quantlab`).
+
+```bash
+cd backend && pytest -q                      # all backend tests
+cd backend && pytest tests/test_properties.py --hypothesis-show-statistics
+cd gateway && go test ./...
+cd web && npm test                           # vitest
+cd web && npx playwright install chromium    # once
+cd web && npm run e2e                        # starts `next dev` on :3100 by itself
+```
+
+**Property tests.** Hypothesis generates the inputs and checks invariants instead of fixed examples: the Numba engine vs its Python twin, the paper risk engine never breaching a limit, the trade aggregator under reordering, the no-trade band in both engines, plus (`tests/test_properties.py`):
+
+- request schemas: a limit order has a price iff it is a limit order, qty / price must be positive (NaN included), cost / band / date-range bounds, and the caps on training requests
+- bar cleaning: whatever comes in, the output is sorted, unique, `low <= open, close <= high`, `low > 0`, `volume >= 0`, and cleaning twice changes nothing
+- bar store: valid bars survive upsert -> load unchanged, and a second upsert is a no-op
+- metrics: every metric is finite, `0 <= max drawdown <= 1`, drawdown ignores the equity scale, and a flat account has all-zero risk numbers
+
+The first run of the metrics property found a real bug: CAGR of a window of a few hours overflowed to `inf`. It is now computed in log space and capped, with a regression test.
+
+**End-to-end.** `web/e2e/` drives the real Next.js pages in Chromium. `page.route()` answers every REST call and `page.routeWebSocket()` fakes the trade and job sockets, so the specs need no database, Redis or running API and take 10-25 s in parallel (the first run includes compiling the pages):
+
+- `live.spec.ts`: candles render, last print from the socket, symbol switch refetches, empty history, API error
+- `backtest.spec.ts`: strategy list from the API, run posts the right body and shows metrics, job socket moves PENDING to SUCCESS, 422 and FAILURE messages
+- `paper.spec.ts`: account cards, kill-switch banner, order ticket body, risk rejection, 422, cancelling an open order
+- `nav.spec.ts`: links, active highlight, brand link, back button
 
 ## License
 

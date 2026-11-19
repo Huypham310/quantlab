@@ -48,7 +48,13 @@ def compute_metrics(
     total = float(equity[-1] / initial_cash - 1.0)
     years = n / periods
     # a wiped-out account has no meaningful CAGR, report -100%
-    cagr = float((equity[-1] / initial_cash) ** (1 / years) - 1.0) if equity[-1] > 0 else -1.0
+    if equity[-1] > 0:
+        # work in log space: annualizing a few hours of data (+25% in 2 bars) overflowed to inf.
+        # exponent capped at 700 so the result stays a finite float (e^700 ~ 1e304)
+        log_growth = float(np.log(equity[-1] / initial_cash))
+        cagr = float(np.expm1(min(log_growth / years, 700.0)))
+    else:
+        cagr = -1.0
 
     std = float(np.std(returns, ddof=1)) if n > 1 else 0.0
     mean = float(np.mean(returns))
