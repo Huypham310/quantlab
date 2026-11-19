@@ -47,3 +47,11 @@ def test_wiped_out_account():
     eq = np.array([500.0, 0.0])
     m = compute_metrics(eq, np.array([-0.5, -1.0]), np.ones(2), np.zeros(2), 1, "1d", 1_000)
     assert m.cagr == -1.0 and m.max_drawdown == 1.0
+
+
+def test_cagr_stays_finite_on_a_very_short_window():
+    # +25% over 2 hourly bars annualizes to a number with ~1900 digits; must not overflow to inf
+    eq = np.array([10_000.0, 12_500.0])
+    r = np.array([0.0, 0.25])
+    m = compute_metrics(eq, r, np.ones(2), np.zeros(2), 1, "1h", 10_000)
+    assert np.isfinite(m.cagr) and m.cagr > 0
