@@ -1,4 +1,29 @@
-# Local infrastructure. App services get added here as they're built.
+# Whole stack: infra (timescaledb, redis), apps (api, worker, consumer, gateway, web) and
+# observability (prometheus, grafana).
+#
+#   cp .env.example .env            # optional, every variable has a default below
+#   docker compose up -d --build    # everything
+#   docker compose up -d timescaledb redis prometheus grafana   # infra only, apps on the host
+#
+# Inside the compose network the apps reach each other by service name (redis, timescaledb).
+# The localhost URLs in .env.example are for running the apps on the host, so the URLs below
+# are built here from the same POSTGRES_* variables instead of being read from .env.
+
+# env chung cho api / worker / consumer / migrate (YAML anchor, đỡ copy 4 lần)
+x-app-env: &app-env
+  QUANTLAB_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-quantlab}:${POSTGRES_PASSWORD:-quantlab}@timescaledb:5432/${POSTGRES_DB:-quantlab}
+  QUANTLAB_REDIS_URL: redis://redis:6379/0
+  QUANTLAB_TRADES_STREAM: trades
+  QUANTLAB_CORS_ORIGINS: ${QUANTLAB_CORS_ORIGINS:-http://localhost:3000}
+  QUANTLAB_WORKER_METRICS_PORT: ${QUANTLAB_WORKER_METRICS_PORT:-9101}
+  QUANTLAB_CONSUMER_METRICS_PORT: ${QUANTLAB_CONSUMER_METRICS_PORT:-9102}
+
+x-backend-build: &backend-build
+  context: ./backend
+  args:
+    # BACKEND_EXTRAS=ml adds LightGBM + torch (needed for train jobs, makes the image much bigger)
+    EXTRAS: ${BACKEND_EXTRAS:-}
+
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg17
@@ -28,6 +53,96 @@ services:
       interval: 5s
       retries: 10
 
+  # ---- apps ---------------------------------------------------------------------------------
+  # one-shot: create the bars table / hypertable before anything reads it
+  # (the API never creates tables itself, only the consumer and the ingest CLI do)
+  migrate:
+    image: quantlab-backend
+    build: *backend-build
+    command:
+      - python
+      - -c
+      - "from quantlab.config import get_settings; from quantlab.data.store import init_db, make_engine; init_db(make_engine(get_settings().database_url))"
+    environment: *app-env
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: quantlab-backend
+    build: *backend-build
+    environment:
+      <<: *app-env
+      QUANTLAB_PAPER_LIVE: ${QUANTLAB_PAPER_LIVE:-0}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # /health also pings the database
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  # celery worker: backtest + train jobs submitted through the API
+  worker:
+    image: quantlab-backend
+    build: *backend-build
+    command: ["celery", "-A", "quantlab.worker", "worker", "--loglevel", "info", "--concurrency", "2"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # trades stream -> 1m bars (consumer group, safe to restart: pending entries get replayed)
+  consumer:
+    image: quantlab-backend
+    build: *backend-build
+    command: ["python", "-m", "quantlab.stream.consumer"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Go gateway: Coinbase public websocket -> Redis Stream (needs outbound internet, no API key)
+  gateway:
+    image: quantlab-gateway
+    build: ./gateway
+    environment:
+      QUANTLAB_REDIS_URL: redis://redis:6379/0
+      QUANTLAB_TRADES_STREAM: trades
+      QUANTLAB_GATEWAY_METRICS_ADDR: ":9100"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: quantlab-web
+    build:
+      context: ./web
+      args:
+        # baked into the JS bundle: the address the *browser* uses, so the host-published port
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
   # ---- observability (docker compose up -d prometheus grafana) -------------------------------
   prometheus:
     image: prom/prometheus:v3.5.0
@@ -37,10 +152,11 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # PROMETHEUS_CONFIG=./observability/prometheus.host.yml when the apps run on the host
+      - ${PROMETHEUS_CONFIG:-./observability/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
-    # the apps run on the host; "host-gateway" makes host.docker.internal resolve on Linux
-    # too (Docker Desktop on Windows/macOS already provides it)
+    # only needed by prometheus.host.yml (apps on the host): "host-gateway" makes
+    # host.docker.internal resolve on Linux too (Docker Desktop already provides it)
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

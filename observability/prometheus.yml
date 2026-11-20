@@ -1,6 +1,8 @@
-# Prometheus for the local demo. The apps run on the host (uvicorn, Go gateway, ...) and
-# Prometheus runs in Docker, so it reaches them through host.docker.internal
-# (see extra_hosts in docker-compose.yml; works on Docker Desktop for Windows and Linux).
+# Prometheus inside the compose network: targets are service names (see docker-compose.yml),
+# so `docker compose up -d` is all it takes. The scrape ports are the containers' own ports,
+# not published on the host.
+# Apps running on the host instead (uvicorn, go run, ...)? Use prometheus.host.yml:
+#   PROMETHEUS_CONFIG=./observability/prometheus.host.yml docker compose up -d prometheus grafana
 global:
   scrape_interval: 5s      # short on purpose: the demo should react within seconds
   evaluation_interval: 15s
@@ -9,20 +11,20 @@ scrape_configs:
   - job_name: quantlab-api
     metrics_path: /metrics
     static_configs:
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["api:8000"]
 
   - job_name: quantlab-gateway
     static_configs:
-      - targets: ["host.docker.internal:9100"]
+      - targets: ["gateway:9100"]
 
   # celery worker: only up once the worker has started (worker_ready signal opens the port)
   - job_name: quantlab-worker
     static_configs:
-      - targets: ["host.docker.internal:9101"]
+      - targets: ["worker:9101"]
 
   - job_name: quantlab-consumer
     static_configs:
-      - targets: ["host.docker.internal:9102"]
+      - targets: ["consumer:9102"]
 
   - job_name: prometheus
     static_configs:
