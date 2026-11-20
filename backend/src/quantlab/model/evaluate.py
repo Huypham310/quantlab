@@ -10,8 +10,6 @@ import numpy as np
 from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
-from quantlab.model.lgbm import fit_lgbm
-from quantlab.model.lstm import fit_lstm
 from quantlab.model.splits import Split
 
 
@@ -65,12 +63,18 @@ def run_walk_forward(
     for k, s in enumerate(splits):
         start = time.perf_counter()
         tr, val = s.train[labelled[s.train]], s.val[labelled[s.val]]
+        # lazy imports: LightGBM / torch are optional (ml extra), so the API and the worker
+        # can start without them and only a train job needs them
         if kind == "lgbm":
+            from quantlab.model.lgbm import fit_lgbm
+
             model = fit_lgbm(x[tr], y[tr], x[val], y[val], trials=trials, seed=seed)
             proba[s.test] = model.predict_proba(x[s.test])
             if names:
                 importance += np.array(list(model.importance(names).values()))
         else:
+            from quantlab.model.lstm import fit_lstm
+
             model = fit_lstm(x, y, tr, val, seq_len=seq_len, trials=trials, seed=seed)
             proba[s.test] = model.predict_proba(x, s.test)
         fold = {
